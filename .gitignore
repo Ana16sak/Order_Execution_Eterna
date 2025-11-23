@@ -23,3 +23,6 @@ docker-compose.override.yml
 # Redis / DB
 *.sqlite
 
+coverage/clover.xml
+coverage/lcov-report/index.html
+coverage/lcov-report/mockDexRouter.ts.html
