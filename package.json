@@ -1,0 +1,42 @@
+{
+  "name": "order-exec-engine",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "lint": "eslint 'src/**/*.{ts,tsx,js}' --fix",
+    "format": "prettier --write 'src/**/*.{ts,tsx,js,json,md}'",
+    "test": "jest --runInBand",
+    "prepare": "husky"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "bullmq": "^5.64.1",
+    "fastify": "^5.6.2",
+    "ioredis": "^5.8.2",
+    "pg": "^8.16.3",
+    "pino": "^10.1.0",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.0.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.15.6",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^9.1.0",
+    "husky": "^9.1.7",
+    "jest": "^29.0.0",
+    "prettier": "^3.3.0",
+    "ts-jest": "^29.0.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
+  }
+}
