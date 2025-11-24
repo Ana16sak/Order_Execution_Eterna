@@ -58,7 +58,7 @@ export async function processOrder(job: Job) {
     throw new Error('job missing orderId');
   }
 
-  const router = new MockDexRouter();
+  const router = new MockDexRouter(false); // disable "fast" mode for realistic delays
 
   try {
     // 1) ROUTING
