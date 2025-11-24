@@ -1,11 +1,3 @@
-Below is a **complete, production-ready `README.md`** tailored to your project architecture and matching the spec in *Backend Task 2 – Order Execution Engine.pdf*.
-I included the required spec citation:
-
-
-You can copy-paste this directly into your GitHub repo.
-
----
-
 # 🚀 Order Execution Engine
 
 A high-performance backend system for processing crypto market orders with DEX routing, WebSocket lifecycle streaming, and concurrent processing using BullMQ.
