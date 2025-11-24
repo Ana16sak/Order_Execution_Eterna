@@ -1,0 +1,158 @@
+{
+	"info": {
+		"_postman_id": "e32be187-16bf-4504-8db5-2b4f7618b5ca",
+		"name": "Order Execution - Send 100 Orders",
+		"description": "Sends 100 market orders to the /api/orders endpoint using pm.sendRequest in a pre-request script.\nSpec file (local): file:///mnt/data/Backend Task 2_ Order Execution Engine.pdf",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "27073019"
+	},
+	"item": [
+		{
+			"name": "Send 100 Orders (batch)",
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"// Pre-request script: send 100 POST requests in parallel using pm.sendRequest",
+							"const base = pm.variables.get('baseUrl') || 'http://localhost:3000';",
+							"const payload = {",
+							"  userId: \"00000000-0000-0000-0000-000000000006\",",
+							"  type: \"market\",",
+							"  tokenIn: \"SOL\",",
+							"  tokenOut: \"USDC\",",
+							"  amountIn: \"1\",",
+							"  slippageTolerance: \"0.01\"",
+							"};",
+							"const total = 100;",
+							"",
+							"for (let i = 0; i < total; i++) {",
+							"  const idx = i + 1;",
+							"  pm.sendRequest({",
+							"    url: base + '/api/orders',",
+							"    method: 'POST',",
+							"    header: { 'Content-Type': 'application/json' },",
+							"    body: { mode: 'raw', raw: JSON.stringify(payload) }",
+							"  }, function (err, res) {",
+							"    if (err) {",
+							"      console.log(`Order #${idx} - ERROR:`, err);",
+							"    } else {",
+							"      // Try to log returned body or status code",
+							"      let bodyText = res && res.text ? res.text() : null;",
+							"      try { bodyText = res && res.json ? res.json() : bodyText; } catch(e) {}",
+							"      console.log(`Order #${idx} - HTTP ${res && res.code}:`, bodyText);",
+							"    }",
+							"  });",
+							"}"
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"// Test script runs after the main request (the main request itself is not executed for each of the 100 requests;",
+							"// the pre-request script triggered 100 separate requests).",
+							"pm.test('Batch trigger executed', function () {",
+							"  pm.expect(true).to.be.true;",
+							"});"
+						]
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"userId\": \"00000000-0000-0000-0000-000000000006\",\n  \"type\": \"market\",\n  \"tokenIn\": \"SOL\",\n  \"tokenOut\": \"USDC\",\n  \"amountIn\": \"1\",\n  \"slippageTolerance\": \"0.01\"\n}"
+				},
+				"url": {
+					"raw": "{{baseUrl}}/api/orders",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"orders"
+					]
+				},
+				"description": "Sends a market order. The collection variable `specFileUrl` points to the uploaded spec: {{specFileUrl}}"
+			},
+			"response": []
+		},
+		{
+			"name": "02 - Create Order",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"// Save orderId and echo response for later requests",
+							"const res = pm.response.json ? pm.response.json() : {};",
+							"if (res.orderId) {",
+							"  pm.environment.set('orderId', res.orderId);",
+							"  console.log('Saved orderId →', res.orderId);",
+							"} else if (res.id) {",
+							"  pm.environment.set('orderId', res.id);",
+							"  console.log('Saved orderId →', res.id);",
+							"} else {",
+							"  console.warn('No orderId found in response');",
+							"}",
+							"",
+							"pm.test('Status is 201', function () {",
+							"  pm.response.to.have.status(201);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"userId\": \"00000000-0000-0000-0000-000000000002\",\n  \"type\": \"market\",\n  \"tokenIn\": \"SOL\",\n  \"tokenOut\": \"USDC\",\n  \"amountIn\": 1,\n  \"slippageTolerance\": 0.01\n}"
+				},
+				"url": {
+					"raw": "{{baseUrl}}/api/orders",
+					"host": [
+						"{{baseUrl}}"
+					],
+					"path": [
+						"api",
+						"orders"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:3000",
+			"type": "string"
+		},
+		{
+			"key": "specFileUrl",
+			"value": "file:///mnt/data/Backend Task 2_ Order Execution Engine.pdf",
+			"type": "string"
+		}
+	]
+}
