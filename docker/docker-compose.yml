@@ -71,7 +71,7 @@ services:
     container_name: order_worker
     restart: always
     environment:
-      NODE_ENV: development
+      NODE_ENV: test
       # Postgres
       PG_HOST: postgres
       PG_PORT: 5432
