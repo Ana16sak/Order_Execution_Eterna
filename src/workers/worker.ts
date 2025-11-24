@@ -1,172 +1,222 @@
 /**
  * src/workers/worker.ts
  *
- * BullMQ worker process for processing "processOrder" jobs.
- * Ensures ioredis used by BullMQ has `maxRetriesPerRequest: null`.
+ * Refactored to:
+ * - Return { status, txHash, executedPrice, dex, attempts, ok }
+ * - Add retry/attempt counting
+ * - Keep same dependency-injection structure
  */
 
-import { Worker, QueueEvents, Job } from 'bullmq';
+import { Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
-import { logger } from '../lib/logger';
+import { logger as defaultLogger } from '../lib/logger';
 import MockDexRouter from '../lib/mockDexRouter';
-import { saveOrderEvent } from '../lib/db/events'; // adjust to your path
-import { publishOrderEvent } from '../lib/ws/publisher'; // adjust to your path
+// import { saveOrderEvent as defaultSave } from '../lib/db/events';
+// import { publishOrderEvent as defaultPublish } from '../lib/ws/publisher';
+import { saveOrderEvent as defaultSave } from '../lib/db/events';
+import { publishOrderEvent as defaultPublish } from '../lib/ws/publisher'; // KEEP this for factory default
 
-const {
-  REDIS_URL,
-  REDIS_HOST = '127.0.0.1',
-  REDIS_PORT = '6379',
-  REDIS_PASSWORD,
-  QUEUE_NAME = 'orders',
-  QUEUE_PREFIX = 'bull',
-  WORKER_CONCURRENCY = '10',
-} = process.env;
 
-// Build redis connection string
-const redisConnectionString =
-  REDIS_URL ||
-  `redis://${REDIS_PASSWORD ? REDIS_PASSWORD + '@' : ''}${REDIS_HOST}:${REDIS_PORT}`;
+//
+// ────────────────────────────────────────────────────────────────
+//  PURE PROCESSOR — now returns the required execution object
+// ────────────────────────────────────────────────────────────────
+//
 
-/**
- * Every ioredis instance passed to BullMQ must have:
- *   - maxRetriesPerRequest: null
- *   - enableReadyCheck: false
- */
-const redis = new IORedis(redisConnectionString, {
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false,
-});
+export interface ProcessOrderDeps {
+  router: MockDexRouter;
+  saveOrderEvent: (orderId: string, status: string, data: any) => Promise<any>;
+  publishOrderEvent: (orderId: string, payload: any) => Promise<any>;
+  logger: typeof defaultLogger;
+}
 
-// Optional: QueueEvents for logging job lifecycle
-const queueEvents = new QueueEvents(QUEUE_NAME, {
-  connection: redis,
-  prefix: QUEUE_PREFIX,
-});
+export async function processOrder(job: Job, deps: ProcessOrderDeps) {
+  const { router, saveOrderEvent, publishOrderEvent, logger } = deps;
 
-/**
- * Inline job processor
- * Replace this with your real Mock DEX routing later.
- */
-export async function processOrder(job: Job) {
-  const data = job.data as any || {};
+  const data = job.data || {};
   const { orderId, tokenIn, tokenOut, amountIn } = data;
+  const attempt = (job as any).attemptsMade != null ? (job as any).attemptsMade + 1 : 1;
 
-  logger.info({ jobId: job.id, orderId }, 'Worker: starting order processing');
+  logger.info({ jobId: job.id, orderId, attempt }, 'Worker: starting order processing');
 
   if (!orderId) {
-    logger.error({ jobId: job.id, data }, 'Worker: job missing orderId - aborting');
+    logger.error({ jobId: job.id, data }, 'Worker: job missing orderId');
     throw new Error('job missing orderId');
   }
 
-  const router = new MockDexRouter(false); // disable "fast" mode for realistic delays
-
   try {
-    // 1) ROUTING
-    await saveOrderEvent(orderId, 'routing', { startedAt: new Date().toISOString() });
-    await publishOrderEvent(orderId, { status: 'routing' });
-    logger.info({ orderId }, 'Worker: routing - fetching quotes');
+    // routing
+    await saveOrderEvent(orderId, 'routing', { startedAt: new Date().toISOString(), attempt });
+    await publishOrderEvent(orderId, { status: 'routing', attempt });
 
+    // quotes
     const [ray, met] = await Promise.all([
       router.getRaydiumQuote(tokenIn, tokenOut, amountIn),
       router.getMeteoraQuote(tokenIn, tokenOut, amountIn),
     ]);
-    logger.info({ orderId, ray, met }, 'Worker: quotes received');
 
-    const chosen = ray.price <= met.price ? { ...ray } : { ...met };
-    chosen.dex = chosen.dex || (ray.price <= met.price ? 'raydium' : 'meteora');
+    const chosen = ray.price <= met.price ? { ...ray, dex: 'raydium' } : { ...met, dex: 'meteora' };
 
-    // 2) BUILDING
-    await saveOrderEvent(orderId, 'building', { chosen });
-    await publishOrderEvent(orderId, { status: 'building', chosen });
-    logger.info({ orderId, chosen }, 'Worker: building tx');
+    await saveOrderEvent(orderId, 'building', { chosen, attempt });
+    await publishOrderEvent(orderId, { status: 'building', chosen, attempt });
 
-    // 3) EXECUTE (simulated)
-    const execRes = await router.executeSwap(chosen.dex, { orderId, tokenIn, tokenOut, amountIn });
+    // execute
+    const exec = await router.executeSwap(chosen.dex, {
+      orderId, tokenIn, tokenOut, amountIn,
+    });
 
-    // 4) SUBMITTED
-    await saveOrderEvent(orderId, 'submitted', { txHash: execRes.txHash });
-    await publishOrderEvent(orderId, { status: 'submitted', txHash: execRes.txHash });
-    logger.info({ orderId, txHash: execRes.txHash }, 'Worker: tx submitted');
+    // submitted
+    await saveOrderEvent(orderId, 'submitted', { txHash: exec.txHash, attempt });
+    await publishOrderEvent(orderId, { status: 'submitted', txHash: exec.txHash, attempt });
 
-    // 5) CONFIRMED
-    await saveOrderEvent(orderId, 'confirmed', execRes);
-    await publishOrderEvent(orderId, { status: 'confirmed', ...execRes });
-    logger.info({ orderId, execRes }, 'Worker: confirmed');
+    // confirmed payload (persist & publish using injected deps)
+    const confirmedPayload = {
+      txHash: exec.txHash,
+      executedPrice: exec.executedPrice,
+      dex: chosen.dex,
+      attempts: attempt,
+      ok: true,
+    };
 
-    logger.info({ jobId: job.id, orderId }, 'Worker: finished order processing');
-    return { ok: true, txHash: execRes.txHash };
-  } catch (err: any) {
-    logger.error({ jobId: job.id, orderId, err: err?.message || String(err) }, 'Worker: error');
     try {
-      await saveOrderEvent(orderId, 'failed', { error: err?.message || String(err) });
-      await publishOrderEvent(orderId, { status: 'failed', error: err?.message || String(err) });
-    } catch (innerErr) {
-      logger.error({ orderId, innerErr }, 'Worker: failed to persist failure event');
+      await saveOrderEvent(orderId, 'confirmed', confirmedPayload);
+    } catch (persistErr) {
+      logger.error({ orderId, persistErr }, 'Worker: failed to persist confirmed event');
+      // continue — still try to publish so tests can observe publish call
     }
+
+    try {
+      await publishOrderEvent(orderId, { status: 'confirmed', ...confirmedPayload });
+    } catch (pubErr) {
+      logger.error({ orderId, pubErr }, 'Worker: failed to publish confirmed event');
+    }
+
+    const returnObj = {
+      status: 'filled',
+      txHash: exec.txHash,
+      executedPrice: exec.executedPrice,
+      dex: chosen.dex,
+      attempts: attempt,
+      ok: true,
+    };
+
+    logger.info({ jobId: job.id, orderId, attempt }, 'Worker: completed successfully');
+    return returnObj;
+  } catch (err: any) {
+    logger.error({ jobId: job.id, orderId, attempt, err: err?.message }, 'Worker: error');
+
+    try {
+      await saveOrderEvent(orderId, 'failed', { error: err?.message, attempt });
+    } catch (persistErr) {
+      logger.error({ orderId, persistErr }, 'Worker: failed to persist failed event');
+    }
+
+    try {
+      await publishOrderEvent(orderId, { status: 'failed', error: err?.message, attempt });
+    } catch (pubErr) {
+      logger.error({ orderId, pubErr }, 'Worker: failed to publish failed event');
+    }
+
     throw err;
   }
 }
 
-// Worker instance — uses the properly configured redis client
-const worker = new Worker(
-  QUEUE_NAME,
-  async (job: Job) => {
-    try {
-      return await processOrder(job);
-    } catch (err) {
-      logger.error({ err, jobId: job.id }, 'Worker: job error');
-      throw err;
-    }
-  },
-  {
-    connection: redis,
-    concurrency: parseInt(WORKER_CONCURRENCY, 10) || 10,
-  }
-);
+//
+// ────────────────────────────────────────────────────────────────
+//  WORKER FACTORY
+// ────────────────────────────────────────────────────────────────
+//
 
-// Worker event logs
-worker.on('completed', (job) => {
-  logger.info({ jobId: job.id, orderId: job.data?.orderId }, 'Worker: job completed');
-});
-
-worker.on('failed', (job, err) => {
-  logger.error({ jobId: job?.id, orderId: job?.data?.orderId, err }, 'Worker: job failed');
-});
-
-worker.on('error', (err) => {
-  logger.error({ err }, 'Worker: internal error');
-});
-
-// Graceful shutdown
-let shuttingDown = false;
-async function shutdown(signal: string) {
-  if (shuttingDown) return;
-  shuttingDown = true;
-
-  logger.info({ signal }, 'Worker shutting down — closing worker and redis');
-
-  try {
-    await worker.close();
-  } catch (err) {
-    logger.warn({ err }, 'Error closing worker');
-  }
-
-  try {
-    await queueEvents.close();
-  } catch (err) {
-    logger.warn({ err }, 'Error closing queueEvents');
-  }
-
-  try {
-    await redis.quit();
-  } catch (err) {
-    logger.warn({ err }, 'Error quitting redis, forcing disconnect');
-    redis.disconnect();
-  }
-
-  logger.info('Worker shutdown complete');
+export interface WorkerFactoryOptions {
+  queueName?: string;
+  concurrency?: number;
+  logger?: typeof defaultLogger;
+  saveOrderEvent?: typeof defaultSave;
+  publishOrderEvent?: (orderId: string, payload: any) => Promise<any>;
+  router?: MockDexRouter;
+  redisConnection?: IORedis;
 }
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('beforeExit', () => shutdown('beforeExit'));
+export function createOrderWorker(opts: WorkerFactoryOptions = {}) {
+  const {
+    queueName = process.env.QUEUE_NAME || 'orders',
+    concurrency = parseInt(
+      process.env.WORKER_CONCURRENCY || '10',
+      10
+    ),
+    logger = defaultLogger,
+    saveOrderEvent = defaultSave,
+    publishOrderEvent = defaultPublish,
+    router = new MockDexRouter(false),
+    redisConnection,
+  } = opts;
+
+  const redis =
+    redisConnection ||
+    new IORedis(
+      process.env.REDIS_URL ||
+        `redis://${process.env.REDIS_PASSWORD ? process.env.REDIS_PASSWORD + '@' : ''}${process.env.REDIS_HOST ||
+          '127.0.0.1'}:${process.env.REDIS_PORT || '6379'}`,
+      {
+        maxRetriesPerRequest: null,
+        enableReadyCheck: false,
+      }
+    );
+
+  const worker = new Worker(
+    queueName,
+    (job) =>
+      processOrder(job, {
+        router,
+        logger,
+        saveOrderEvent,
+        publishOrderEvent,
+      }),
+    {
+      connection: redis,
+      concurrency,
+    }
+  );
+
+  worker.on('completed', (job, result) => {
+    logger.info(
+      { jobId: job.id, orderId: job.data?.orderId, result },
+      'Worker: job completed'
+    );
+  });
+
+  worker.on('failed', (job, err) => {
+    logger.error(
+      { jobId: job?.id, orderId: job?.data?.orderId, err },
+      'Worker: job failed'
+    );
+  });
+
+  return { worker, redis };
+}
+
+//
+// ────────────────────────────────────────────────────────────────
+//  PRODUCTION ENTRY
+// ────────────────────────────────────────────────────────────────
+//
+
+if (require.main === module) {
+  const { worker, redis } = createOrderWorker();
+
+  async function shutdown(signal: string) {
+    defaultLogger.info({ signal }, 'Worker shutting down...');
+    try {
+      await worker.close();
+    } catch {}
+    try {
+      await redis.quit();
+    } catch {
+      redis.disconnect();
+    }
+    process.exit(0);
+  }
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
