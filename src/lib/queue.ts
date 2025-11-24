@@ -44,10 +44,10 @@ const redisConnectionString =
  *
  * enableReadyCheck:false is recommended for Docker and avoids startup hangs.
  */
-const sharedRedis = new IORedis(redisConnectionString, {
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false
-});
+export const sharedRedis = new IORedis(redisConnectionString, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false
+ });
 
 // BullMQ queue options
 const queueOpts: QueueOptions = {
